@@ -31,6 +31,7 @@ pub struct Simbolo {
     pub nombre: String,
     pub tipo_dato: TipoDato,
     pub es_funcion: bool,
+    pub parametros: Vec<TipoDato>,
     pub inicializada: bool,
     pub usada: bool,
 }
@@ -70,11 +71,12 @@ impl TablaSimbolos {
         nombre: String,
         tipo_dato: TipoDato,
         es_funcion: bool,
+        parametros: Vec<TipoDato>,
     ) -> Result<(), String> {
         let entorno_actual = self.entornos.last_mut().unwrap();
         if entorno_actual.contains_key(&nombre) {
             return Err(format!(
-                "El simbolo '{}' ya ha sido declarado en este bloque.",
+                "El símbolo '{}' ya ha sido declarado en este bloque.",
                 nombre
             ));
         }
@@ -84,6 +86,7 @@ impl TablaSimbolos {
                 nombre,
                 tipo_dato,
                 es_funcion,
+                parametros,
                 inicializada: false,
                 usada: false,
             },
@@ -137,7 +140,7 @@ impl AnalizadorSemantico {
     // --- Funciones Visitadoras ---
 
     fn visitar_instruccion(&mut self, stmt: &Stmt) {
-        // ¿Estamos en el entorno global? (Nivel 0)
+        // Estamos en el entorno global? (Nivel 0)
         let es_global = self.tabla.entornos.len() == 1;
 
         match stmt {
@@ -147,9 +150,10 @@ impl AnalizadorSemantico {
                 valor,
             } => {
                 let tipo_enum = TipoDato::from_str(tipo);
-                if let Err(e) = self
-                    .tabla
-                    .declarar(nombre.clone(), tipo_enum.clone(), false)
+
+                if let Err(e) =
+                    self.tabla
+                        .declarar(nombre.clone(), tipo_enum.clone(), false, Vec::new())
                 {
                     self.errores.push(e);
                 }
@@ -207,24 +211,52 @@ impl AnalizadorSemantico {
             }
             Stmt::DefFuncion {
                 nombre,
+                parametros,
                 tipo_retorno,
                 cuerpo,
             } => {
-                // Declaramos la función en el entorno global
                 let tipo_enum = TipoDato::from_str(tipo_retorno);
-                if let Err(e) = self.tabla.declarar(nombre.clone(), tipo_enum, true) {
+
+                // 1. Extraemos los tipos de los parámetros para guardarlos en la "firma" de la función
+                let mut tipos_parametros = Vec::new();
+                for (_, tipo_param) in parametros {
+                    tipos_parametros.push(TipoDato::from_str(tipo_param));
+                }
+
+                // 2. Declaramos la función globalmente pasándole sus parámetros
+                if let Err(e) =
+                    self.tabla
+                        .declarar(nombre.clone(), tipo_enum, true, tipos_parametros)
+                {
                     self.errores.push(e);
                 }
 
-                // Entramos al entorno local de la función
+                // 3. Entramos al entorno local de la función
                 self.tabla.entrar_entorno();
 
-                // Recorremos las instrucciones de su cuerpo
+                // 4. Inyectamos los parámetros como si fueran variables declaradas
+
+                // para que el código del 'cuerpo' pueda usarlas sin que dé "Error: Variable no definida".
+                for (nombre_param, tipo_param) in parametros {
+                    let tipo_enum_param = TipoDato::from_str(tipo_param);
+                    if let Err(e) = self.tabla.declarar(
+                        nombre_param.clone(),
+                        tipo_enum_param,
+                        false,
+                        Vec::new(),
+                    ) {
+                        self.errores.push(e);
+                    }
+                    if let Some(simbolo) = self.tabla.buscar(nombre_param) {
+                        simbolo.inicializada = true; // Ya vienen con valor cuando se llama a la función
+                    }
+                }
+
+                // Recorremos el cuerpo de la función
                 for inst in cuerpo {
                     self.visitar_instruccion(inst);
                 }
 
-                // Salimos del entorno para recolectar el Dead Code
                 self.tabla.salir_entorno(&mut self.warnings);
             }
             // Ignoramos el resto por ahora
@@ -259,7 +291,6 @@ impl AnalizadorSemantico {
                 }
             }
             Expr::LlamadaFuncion { nombre, argumentos } => {
-                // 1. Caso Especial: Funciones Nativas (Built-ins)
                 if nombre == "print" {
                     for arg in argumentos {
                         self.visitar_expresion(arg);
@@ -267,33 +298,62 @@ impl AnalizadorSemantico {
                     return TipoDato::Void;
                 }
 
-                // 2. Funciones definidas por el usuario
-
+                // Extraemos la información aislando el préstamo (borrow)
                 let info_funcion = {
                     if let Some(simbolo) = self.tabla.buscar(nombre) {
-                        simbolo.usada = true; // Marcamos como usada
-                        Some((simbolo.es_funcion, simbolo.tipo_dato.clone())) // Clonamos los datos que necesitamos
+                        simbolo.usada = true;
+                        // 🌟 Extraemos también la lista de parámetros
+                        Some((
+                            simbolo.es_funcion,
+                            simbolo.tipo_dato.clone(),
+                            simbolo.parametros.clone(),
+                        ))
                     } else {
                         None
                     }
                 };
 
                 match info_funcion {
-                    Some((es_funcion, tipo_retorno)) => {
-                        // Verificamos que no sea una variable con paréntesis
+                    Some((es_funcion, tipo_retorno, parametros_esperados)) => {
                         if !es_funcion {
-                            self.errores.push(format!("Error Semantico: '{}' es una variable, no una funcion que se pueda llamar.", nombre));
+                            self.errores.push(format!(
+                                "Error Semantico: '{}' es una variable, no una funcion.",
+                                nombre
+                            ));
                             return TipoDato::Desconocido;
                         }
 
-                        for arg in argumentos {
-                            self.visitar_expresion(arg);
+                        // Validar cantidad de argumentos
+                        if argumentos.len() != parametros_esperados.len() {
+                            self.errores.push(format!("Error Semantico: La funcion '{}' espera {} argumentos, pero se enviaron {}.", nombre, parametros_esperados.len(), argumentos.len()));
+                        } else {
+                            // Validar que los tipos coincidan
+                            for (i, arg) in argumentos.iter().enumerate() {
+                                let tipo_arg = self.visitar_expresion(arg);
+                                let tipo_esperado = &parametros_esperados[i];
+
+                                if tipo_arg != TipoDato::Desconocido && tipo_arg != *tipo_esperado {
+                                    // Tolerancia habitual: Permitir enviar un Int si esperaba Float
+                                    if !(*tipo_esperado == TipoDato::Float
+                                        && tipo_arg == TipoDato::Int)
+                                    {
+                                        self.errores.push(format!("Error Semantico: Argumento {} en funcion '{}' esperaba tipo {:?}, pero recibio {:?}", i + 1, nombre, tipo_esperado, tipo_arg));
+                                    }
+                                }
+                            }
+                        }
+
+                        // Evaluamos los argumentos aunque haya error de longitud para marcarlos como usados
+                        if argumentos.len() != parametros_esperados.len() {
+                            for arg in argumentos {
+                                self.visitar_expresion(arg);
+                            }
                         }
 
                         return tipo_retorno;
                     }
                     None => {
-                        self.errores.push(format!("Error Semantico: Se intentó llamar a la funcion '{}', pero no ha sido definida.", nombre));
+                        self.errores.push(format!("Error Semantico: Se intento llamar a la funcion '{}', pero no ha sido definida.", nombre));
                         return TipoDato::Desconocido;
                     }
                 }

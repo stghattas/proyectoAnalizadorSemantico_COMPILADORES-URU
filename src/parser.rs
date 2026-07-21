@@ -277,8 +277,9 @@ impl Parser {
             }
 
             // --- La estructura de Funciones (def) ---
+
             TokenType::PalabraReservada(palabra) if palabra == "def" => {
-                let indent_base = token_actual.indent_level; // Nivel de la declaración
+                let indent_base = token_actual.indent_level; // Nivel de la declaracion
                 self.advance(); // Consumimos 'def'
 
                 // 1. Buscamos el nombre de la función
@@ -287,12 +288,12 @@ impl Parser {
                         nombre
                     } else {
                         return Err(format!(
-                            "Línea {}: Se esperaba el nombre de la función",
+                            "Línea {}: Se esperaba el nombre de la funcion",
                             token_nombre.line
                         ));
                     }
                 } else {
-                    return Err("Fin de archivo al leer la función".to_string());
+                    return Err("Fin de archivo al leer la funcion".to_string());
                 };
 
                 // 2. Esperamos los paréntesis de apertura '('
@@ -305,26 +306,85 @@ impl Parser {
                     }
                 }
 
-                // asumimos funciones sin parámetros y buscamos el ')'
+                let mut parametros = Vec::new();
+
+                if let Some(token_actual) = self.peek().cloned() {
+                    if token_actual.token_type != TokenType::Puntuacion(')') {
+                        loop {
+                            // a. Leer nombre del parámetro
+                            let param_nombre = if let Some(t_nom) = self.advance().cloned() {
+                                if let TokenType::Identificador(n) = t_nom.token_type {
+                                    n
+                                } else {
+                                    return Err(format!(
+                                        "Línea {}: Se esperaba el nombre del parámetro",
+                                        t_nom.line
+                                    ));
+                                }
+                            } else {
+                                return Err("Fin inesperado".to_string());
+                            };
+
+                            // b. Leer los dos puntos ':'
+                            if let Some(t_puntos) = self.advance().cloned() {
+                                if t_puntos.token_type != TokenType::Puntuacion(':') {
+                                    return Err(format!(
+                                        "Línea {}: Se esperaba ':' después del parámetro '{}'",
+                                        t_puntos.line, param_nombre
+                                    ));
+                                }
+                            }
+
+                            // c. Leer el tipo del parámetro
+                            let param_tipo = if let Some(t_tipo) = self.advance().cloned() {
+                                if let TokenType::Identificador(t) = t_tipo.token_type {
+                                    t
+                                } else if let TokenType::PalabraReservada(t) = t_tipo.token_type {
+                                    t
+                                } else {
+                                    return Err(format!(
+                                        "Línea {}: Se esperaba el tipo del parámetro '{}'",
+                                        t_tipo.line, param_nombre
+                                    ));
+                                }
+                            } else {
+                                return Err("Fin inesperado".to_string());
+                            };
+
+                            parametros.push((param_nombre, param_tipo));
+
+                            // d. Verificar si hay una coma para otro parámetro, o si cerramos
+                            if let Some(t_sig) = self.peek().cloned() {
+                                if t_sig.token_type == TokenType::Puntuacion(',') {
+                                    self.advance(); // Consumimos la coma
+                                } else {
+                                    break; // Rompemos el bucle, debería seguir el ')'
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 3. Buscamos el ')' de cierre
                 if let Some(par_cierra) = self.advance().cloned() {
                     if par_cierra.token_type != TokenType::Puntuacion(')') {
                         return Err(format!(
-                            "Línea {}: Se esperaba ')' (Los parámetros en funciones aún no están implementados)",
+                            "Línea {}: Se esperaba ')' para cerrar los parámetros",
                             par_cierra.line
                         ));
                     }
                 }
 
-                // 3. Esperamos los dos puntos ':'
+                // 4. Esperamos los dos puntos ':' que inician el bloque
                 if let Some(dos_puntos) = self.advance().cloned() {
                     if let TokenType::Puntuacion(c) = dos_puntos.token_type {
                         if c == ':' {
-                            // 4. Leemos todo el cuerpo de la función (el bloque indentado)
                             let cuerpo = self.parse_bloque(indent_base)?;
 
                             return Ok(Stmt::DefFuncion {
                                 nombre: nombre_func,
-                                tipo_retorno: "Void".to_string(), // el tipo de retorno por defecto es Void
+                                parametros,
+                                tipo_retorno: "Void".to_string(),
                                 cuerpo,
                             });
                         }

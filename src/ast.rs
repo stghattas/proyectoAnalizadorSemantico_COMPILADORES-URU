@@ -45,6 +45,7 @@ pub enum Stmt {
     },
     DefFuncion {
         nombre: String,
+        parametros: Vec<(String, String)>,
         tipo_retorno: String,
         cuerpo: Vec<Stmt>,
     },
@@ -123,6 +124,7 @@ impl Stmt {
                 nombre,
                 tipo_retorno,
                 cuerpo,
+                parametros,
             } => {
                 println!(
                     "{}└── Función [Nombre: {}, Retorno: {}]",
