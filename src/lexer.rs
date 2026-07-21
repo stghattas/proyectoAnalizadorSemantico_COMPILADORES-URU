@@ -73,7 +73,7 @@ impl Lexer {
                 espacios += 1;
                 self.advance();
             } else if c == '\t' {
-                espacios += 4; // Internamente un tab vale como 4 espacios
+                espacios += 4; // Internamente un tab vale como 4 espacios exactos
                 self.advance();
             } else if c == '\r' {
                 self.advance();
@@ -88,19 +88,17 @@ impl Lexer {
             }
         }
 
-        if espacios > 0 {
-            // Si es la primera vez que el Lexer ve una indentación en todo el archivo, 
-            // guarda esa cantidad como la regla oficial del documento.
-            if self.indent_step.is_none() {
-                self.indent_step = Some(espacios);
-            }
-
-            let regla_espacios = self.indent_step.unwrap();
-            
-            // Calculamos el nivel dividiendo por la regla que el propio programador definió
-            self.current_indent = espacios / regla_espacios;
+        // 4 espacios equivalen exactamente a 1 nivel.
+        if espacios == 0 {
+            self.current_indent = 0;
+        } else if espacios % 4 != 0 {
+            // Si la cantidad de espacios no es múltiplo de 4 (ej. pusiste 3, 5, 7 espacios),
+            // es una indentación corrupta. Le pasamos un nivel absurdo (9999) al Parser 
+            // para obligarlo a hacer 'crash' instantáneo.
+            self.current_indent = 9999; 
         } else {
-            self.current_indent = 0; // Sin espacios es nivel 0 (ej. un nuevo def)
+            // Si pusiste 4, 8, 12 espacios, calculamos el nivel matemáticamente
+            self.current_indent = espacios / 4;
         }
     }
 

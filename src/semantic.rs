@@ -10,11 +10,17 @@ pub enum TipoDato {
     String,
     Bool,
     Void,
+    Array(Box<TipoDato>),
     Desconocido,
 }
 
 impl TipoDato {
     pub fn from_str(tipo: &str) -> Self {
+        // Si termina en [], extraemos la base (ej: "int[]" -> "int")
+        if tipo.ends_with("[]") {
+            let base = &tipo[..tipo.len() - 2];
+            return TipoDato::Array(Box::new(TipoDato::from_str(base)));
+        }
         match tipo {
             "int" => TipoDato::Int,
             "float" => TipoDato::Float,
@@ -163,10 +169,20 @@ impl AnalizadorSemantico {
                     let tipo_valor = self.visitar_expresion(expr_valor);
 
                     // Comparamos si los tipos son compatibles
+                    // Revisar si estamos asignando un array vacío a una variable array
+                    let es_array_vacio = if let (TipoDato::Array(_), TipoDato::Array(t_val)) =
+                        (&tipo_enum, &tipo_valor)
+                    {
+                        **t_val == TipoDato::Desconocido
+                    } else {
+                        false
+                    };
+
                     if tipo_valor != TipoDato::Desconocido && tipo_valor != tipo_enum {
-                        // Damos cierta flexibilidad: permitir guardar un Int en un Float
-                        if !(tipo_enum == TipoDato::Float && tipo_valor == TipoDato::Int) {
-                            self.errores.push(format!("Error Semantico: No se puede asignar un valor de tipo {:?} a la variable '{}' de tipo {:?}.", tipo_valor, nombre, tipo_enum));
+                        if !(tipo_enum == TipoDato::Float && tipo_valor == TipoDato::Int)
+                            && !es_array_vacio
+                        {
+                            self.errores.push(format!("Error Semántico: No se puede asignar un valor de tipo {:?} a la variable '{}' de tipo {:?}.", tipo_valor, nombre, tipo_enum));
                         }
                     }
 
@@ -185,9 +201,20 @@ impl AnalizadorSemantico {
                         let tipo_variable = simbolo.tipo_dato.clone();
 
                         // Comparamos compatibilidad en asignaciones (x = "hola")
+                        // Revisar si estamos asignando un array vacío a una variable array
+                        let es_array_vacio = if let (TipoDato::Array(_), TipoDato::Array(t_val)) =
+                            (&tipo_variable, &tipo_valor)
+                        {
+                            **t_val == TipoDato::Desconocido
+                        } else {
+                            false
+                        };
+
                         if tipo_valor != TipoDato::Desconocido && tipo_valor != tipo_variable {
-                            if !(tipo_variable == TipoDato::Float && tipo_valor == TipoDato::Int) {
-                                self.errores.push(format!("Error Semantico: No se puede asignar un valor de tipo {:?} a la variable '{}' que es de tipo {:?}.", tipo_valor, nombre, tipo_variable));
+                            if !(tipo_variable == TipoDato::Float && tipo_valor == TipoDato::Int)
+                                && !es_array_vacio
+                            {
+                                self.errores.push(format!("Error Semántico: No se puede asignar un valor de tipo {:?} a la variable '{}' de tipo {:?}.", tipo_valor, nombre, tipo_variable));
                             }
                         }
 
@@ -259,8 +286,64 @@ impl AnalizadorSemantico {
 
                 self.tabla.salir_entorno(&mut self.warnings);
             }
-            // Ignoramos el resto por ahora
-            _ => {}
+            Stmt::If {
+                condicion,
+                bloque_true,
+                bloque_else,
+            } => {
+                self.visitar_expresion(condicion); // Evaluamos la condición
+
+                // Recorremos el interior del bloque if
+                for inst in bloque_true {
+                    self.visitar_instruccion(inst);
+                }
+
+                // Si hay un else, también lo recorremos
+                if let Some(bloque) = bloque_else {
+                    for inst in bloque {
+                        self.visitar_instruccion(inst);
+                    }
+                }
+            }
+            Stmt::While { condicion, bloque } => {
+                self.visitar_expresion(condicion);
+                for inst in bloque {
+                    self.visitar_instruccion(inst);
+                }
+            }
+            Stmt::For {
+                variable,
+                iterable,
+                bloque,
+            } => {
+                let tipo_iterable = self.visitar_expresion(iterable);
+
+                // Entramos a un micro-entorno para la variable del for (ej: 'i')
+                self.tabla.entrar_entorno();
+
+                // Declaramos la variable iteradora temporal
+                // Si iteras un Array(Int), la variable es Int. Si no, le ponemos Desconocido por ahora.
+                let tipo_var = if let TipoDato::Array(tipo_base) = tipo_iterable {
+                    *tipo_base
+                } else {
+                    TipoDato::Desconocido
+                };
+
+                let _ = self
+                    .tabla
+                    .declarar(variable.clone(), tipo_var, false, Vec::new());
+                if let Some(simbolo) = self.tabla.buscar(variable) {
+                    simbolo.inicializada = true;
+                }
+
+                // Recorremos el interior del for
+                for inst in bloque {
+                    self.visitar_instruccion(inst);
+                }
+
+                self.tabla.salir_entorno(&mut self.warnings);
+            }
+            _ => {} // Ahora sí, por si acaso hay algún nodo suelto no contemplado
         }
     }
 
@@ -400,6 +483,25 @@ impl AnalizadorSemantico {
                     }
                     _ => TipoDato::Desconocido,
                 }
+            }
+            Expr::Array(elementos) => {
+                if elementos.is_empty() {
+                    // Un array vacío [] inicialmente no tiene tipo definido
+                    return TipoDato::Array(Box::new(TipoDato::Desconocido));
+                }
+
+                // Determinamos el tipo basado en el primer elemento
+                let tipo_base = self.visitar_expresion(&elementos[0]);
+
+                // Validamos que todos los demás sean estrictamente del mismo tipo
+                for (i, elem) in elementos.iter().enumerate().skip(1) {
+                    let tipo_elem = self.visitar_expresion(elem);
+                    if tipo_elem != tipo_base {
+                        self.errores.push(format!("Error Semantico: Tipos mixtos en el array. El indice 0 es {:?} pero el indice {} es {:?}", tipo_base, i, tipo_elem));
+                    }
+                }
+
+                TipoDato::Array(Box::new(tipo_base))
             }
         }
     }

@@ -10,11 +10,11 @@ pub enum Expr {
         operador: String,
         derecho: Box<Expr>,
     },
-    // NUEVO: Para cosas como print("si") o calcular(a, b)
     LlamadaFuncion {
         nombre: String,
         argumentos: Vec<Expr>,
     },
+    Array(Vec<Expr>),
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +149,12 @@ impl Expr {
             Expr::LiteralString(val) => println!("{}├── String: \"{}\"", sangria, val),
             Expr::LiteralBool(val) => println!("{}├── Booleano: {}", sangria, val),
             Expr::Identificador(nombre) => println!("{}├── Id: {}", sangria, nombre),
+            Expr::Array(elementos) => {
+                println!("{}├── Array", sangria);
+                for elem in elementos {
+                    elem.imprimir_arbol(nivel + 2);
+                }
+            }
             Expr::OperacionBinaria {
                 izquierdo,
                 operador,

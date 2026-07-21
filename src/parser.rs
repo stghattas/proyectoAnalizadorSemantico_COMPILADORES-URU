@@ -84,12 +84,10 @@ impl Parser {
                 break;
             }
 
-            // Candado de Alineación
-            // 🛑 REGLA ESTRICTA DE PYTHON: Candado de Alineación y Salto
+            // Candado de Alineación y Salto
             match nivel_esperado {
                 None => {
                     // El salto de indentación DEBE ser de exactamente 1 nivel.
-                    // No se permiten saltos del nivel 0 al 4 directamente.
                     if token.indent_level != indent_base + 1 {
                         return Err(format!(
                             "IndentationError en la línea {}: Salto de indentación inválido. Se esperaba nivel {}, pero se encontró nivel {}",
@@ -277,7 +275,6 @@ impl Parser {
             }
 
             // --- La estructura de Funciones (def) ---
-
             TokenType::PalabraReservada(palabra) if palabra == "def" => {
                 let indent_base = token_actual.indent_level; // Nivel de la declaracion
                 self.advance(); // Consumimos 'def'
@@ -401,14 +398,15 @@ impl Parser {
             TokenType::Identificador(nombre) => {
                 let nombre_variable = nombre.clone();
                 self.advance(); // Consumimos el identificador inicial (ej: 'j', 'x', 'y')
+                
                 // 1. ¿Es una declaración de tipo con ':'? (ej: x:int)
                 if let Some(siguiente) = self.peek() {
                     if let TokenType::Puntuacion(c) = &siguiente.token_type {
                         if *c == ':' {
                             self.advance(); // Consumimos los ':'
 
-                            // Lo que sigue DEBE ser el tipo de dato (ej: 'int')
-                            let tipo_dato = if let Some(token_tipo) = self.advance().cloned() {
+                            // Convertimos tipo_dato a `mut` para poder agregarle `[]` si es array
+                            let mut tipo_dato = if let Some(token_tipo) = self.advance().cloned() {
                                 if let TokenType::Identificador(t) = token_tipo.token_type {
                                     t
                                 } else if let TokenType::PalabraReservada(t) = token_tipo.token_type
@@ -425,6 +423,19 @@ impl Parser {
                                     .to_string());
                             };
 
+                            // Es un tipo Array? (Revisamos si le siguen unos corchetes [])
+                            // Ahora esto está ANTES del `return Ok(Stmt::Declaracion)`
+                            if let Some(tok_abre) = self.peek().cloned() {
+                                if tok_abre.token_type == TokenType::Puntuacion('[') {
+                                    self.advance(); // consumimos '['
+                                    if let Some(tok_cierra) = self.advance().cloned() {
+                                        if tok_cierra.token_type == TokenType::Puntuacion(']') {
+                                            tipo_dato = format!("{}[]", tipo_dato); // Guardamos "int[]"
+                                        }
+                                    }
+                                }
+                            }
+
                             // Ahora revisamos si además se le está asignando un valor inicial con '='
                             let mut valor_inicial = None;
                             if let Some(token_despues_tipo) = self.peek() {
@@ -436,6 +447,7 @@ impl Parser {
                                 }
                             }
 
+                            // Retornamos la declaración completa y validada
                             return Ok(Stmt::Declaracion {
                                 nombre: nombre_variable,
                                 tipo: tipo_dato,
@@ -638,6 +650,37 @@ impl Parser {
                     ));
                 }
                 Err("Error Sintactico: Se esperaba ')' antes del fin de archivo".to_string())
+            }
+
+            // Parsear la creación de un arreglo (ej: [1, 2, 3])
+            TokenType::Puntuacion(c) if c == '[' => {
+                let mut elementos = Vec::new();
+                
+                if let Some(token_actual) = self.peek() {
+                    // Si no se cierra inmediatamente (ej: array vacío []), leemos elementos
+                    if token_actual.token_type != TokenType::Puntuacion(']') {
+                        elementos.push(self.parse_expresion()?); // Primer elemento
+                        
+                        // Mientras haya comas, leemos más
+                        while let Some(token_sig) = self.peek() {
+                            if token_sig.token_type == TokenType::Puntuacion(',') {
+                                self.advance(); // Consumimos la ','
+                                elementos.push(self.parse_expresion()?);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                // Esperamos el cierre ']'
+                if let Some(token_cierre) = self.advance().cloned() {
+                    if token_cierre.token_type == TokenType::Puntuacion(']') {
+                        return Ok(Expr::Array(elementos));
+                    }
+                    return Err(format!("Línea {}: Se esperaba ']' al final del array", token_cierre.line));
+                }
+                Err("Fin de archivo esperando ']'".to_string())
             }
 
             _ => Err(format!(
