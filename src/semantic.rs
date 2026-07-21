@@ -10,7 +10,7 @@ pub enum TipoDato {
     String,
     Bool,
     Void,
-    Desconocido, // Útil para cuando una variable no existe o hay un error
+    Desconocido,
 }
 
 impl TipoDato {
@@ -36,7 +36,6 @@ pub struct Simbolo {
 }
 
 // --- 2. La Tabla de Símbolos ---
-
 pub struct TablaSimbolos {
     entornos: Vec<HashMap<String, Simbolo>>,
 }
@@ -148,12 +147,24 @@ impl AnalizadorSemantico {
                 valor,
             } => {
                 let tipo_enum = TipoDato::from_str(tipo);
-                if let Err(e) = self.tabla.declarar(nombre.clone(), tipo_enum, false) {
+                if let Err(e) = self
+                    .tabla
+                    .declarar(nombre.clone(), tipo_enum.clone(), false)
+                {
                     self.errores.push(e);
                 }
 
                 if let Some(expr_valor) = valor {
-                    self.visitar_expresion(expr_valor);
+                    // Obtenemos el tipo del valor que se intenta guardar
+                    let tipo_valor = self.visitar_expresion(expr_valor);
+
+                    // Comparamos si los tipos son compatibles
+                    if tipo_valor != TipoDato::Desconocido && tipo_valor != tipo_enum {
+                        // Damos cierta flexibilidad: permitir guardar un Int en un Float
+                        if !(tipo_enum == TipoDato::Float && tipo_valor == TipoDato::Int) {
+                            self.errores.push(format!("Error Semantico: No se puede asignar un valor de tipo {:?} a la variable '{}' de tipo {:?}.", tipo_valor, nombre, tipo_enum));
+                        }
+                    }
 
                     if let Some(simbolo) = self.tabla.buscar(nombre) {
                         simbolo.inicializada = true;
@@ -162,11 +173,20 @@ impl AnalizadorSemantico {
             }
             Stmt::Asignacion { nombre, valor } => {
                 if es_global {
-                    self.errores.push(format!("Error Semantico: Asignacion a la variable '{}' en el entorno global. El codigo ejecutable debe estar dentro de una funcion.", nombre));
+                    self.errores.push(format!("Error Semántico: Asignación a la variable '{}' en el entorno global. El código ejecutable debe estar dentro de una función.", nombre));
                 } else {
-                    self.visitar_expresion(valor);
+                    let tipo_valor = self.visitar_expresion(valor);
 
                     if let Some(simbolo) = self.tabla.buscar(nombre) {
+                        let tipo_variable = simbolo.tipo_dato.clone();
+
+                        // Comparamos compatibilidad en asignaciones (x = "hola")
+                        if tipo_valor != TipoDato::Desconocido && tipo_valor != tipo_variable {
+                            if !(tipo_variable == TipoDato::Float && tipo_valor == TipoDato::Int) {
+                                self.errores.push(format!("Error Semantico: No se puede asignar un valor de tipo {:?} a la variable '{}' que es de tipo {:?}.", tipo_valor, nombre, tipo_variable));
+                            }
+                        }
+
                         simbolo.inicializada = true;
                         simbolo.usada = true;
                     } else {
@@ -251,13 +271,43 @@ impl AnalizadorSemantico {
                 operador,
                 derecho,
             } => {
-                // Evaluamos ambos lados de la operación
                 let tipo_izq = self.visitar_expresion(izquierdo);
                 let tipo_der = self.visitar_expresion(derecho);
 
-                // TODO: Validar compatibilidad de tipos (Ej. no sumar Int con String)
+                // Si alguno es desconocido, evitamos lanzar errores en cascada
+                if tipo_izq == TipoDato::Desconocido || tipo_der == TipoDato::Desconocido {
+                    return TipoDato::Desconocido;
+                }
 
-                tipo_izq // Temporalmente asumimos que el resultado es del mismo tipo
+                match operador.as_str() {
+                    "+" | "-" | "*" | "/" => {
+                        // Regla: Matemáticas solo con numeros
+                        let izq_es_num = tipo_izq == TipoDato::Int || tipo_izq == TipoDato::Float;
+                        let der_es_num = tipo_der == TipoDato::Int || tipo_der == TipoDato::Float;
+
+                        if izq_es_num && der_es_num {
+                            if tipo_izq == TipoDato::Float || tipo_der == TipoDato::Float {
+                                return TipoDato::Float;
+                            }
+                            return TipoDato::Int;
+                        }
+                        // Regla Especial: Permitir concatenar Strings con '+'
+                        else if operador == "+"
+                            && tipo_izq == TipoDato::String
+                            && tipo_der == TipoDato::String
+                        {
+                            return TipoDato::String;
+                        } else {
+                            self.errores.push(format!("Error Semantico: Tipos incompatibles para la operacion '{}' entre {:?} y {:?}", operador, tipo_izq, tipo_der));
+                            return TipoDato::Desconocido;
+                        }
+                    }
+                    ">" | "<" | ">=" | "<=" | "==" | "!=" => {
+                        // Las operaciones relacionales siempre devuelven un Booleano
+                        return TipoDato::Bool;
+                    }
+                    _ => TipoDato::Desconocido,
+                }
             }
         }
     }
