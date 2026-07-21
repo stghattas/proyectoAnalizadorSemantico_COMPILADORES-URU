@@ -147,42 +147,42 @@ impl AnalizadorSemantico {
                 tipo,
                 valor,
             } => {
-                // REGLA: Redeclaraciones
                 let tipo_enum = TipoDato::from_str(tipo);
                 if let Err(e) = self.tabla.declarar(nombre.clone(), tipo_enum, false) {
                     self.errores.push(e);
                 }
 
-                // 🛠️ CORRECCIÓN: Solo la marcamos inicializada si realmente trae un valor (ej. x: int = 5)
-                if valor.is_some() {
+                if let Some(expr_valor) = valor {
+                    self.visitar_expresion(expr_valor);
+
                     if let Some(simbolo) = self.tabla.buscar(nombre) {
                         simbolo.inicializada = true;
                     }
                 }
             }
             Stmt::Asignacion { nombre, valor } => {
-                // REGLA: Código fuera de funciones
                 if es_global {
-                    self.errores.push(format!("Error Semántico: Asignación a la variable '{}' en el entorno global. El código ejecutable debe estar dentro de una función.", nombre));
+                    self.errores.push(format!("Error Semantico: Asignacion a la variable '{}' en el entorno global. El codigo ejecutable debe estar dentro de una funcion.", nombre));
                 } else {
-                    // 🌟 NUEVA REGLA: Validar que la variable existe antes de asignarle un valor
+                    self.visitar_expresion(valor);
+
                     if let Some(simbolo) = self.tabla.buscar(nombre) {
                         simbolo.inicializada = true;
-                        simbolo.usada = true; // La marcamos como usada para apagar el Warning de Dead Code
+                        simbolo.usada = true;
                     } else {
-                        // Si la variable no está en la tabla de símbolos, lanzamos un error semántico
-                        self.errores.push(format!("Error Semántico: La variable '{}' no ha sido declarada antes de su uso.", nombre));
+                        self.errores.push(format!("Error Semantico: La variable '{}' no ha sido declarada antes de su uso.", nombre));
                     }
                 }
             }
             Stmt::Expresion(expr) => {
-                // REGLA: Código fuera de funciones
                 if es_global {
                     if let Expr::LiteralString(_) = expr {
-                        // Es un comentario multilínea, lo ignoramos.
+                        // Comentario multilínea
                     } else {
-                        self.errores.push("Error Semántico: Expresión ejecutable encontrada fuera de una función.".to_string());
+                        self.errores.push("Error Semantico: Expresion ejecutable encontrada fuera de una funcion.".to_string());
                     }
+                } else {
+                    self.visitar_expresion(expr);
                 }
             }
             Stmt::DefFuncion {
@@ -209,6 +209,56 @@ impl AnalizadorSemantico {
             }
             // Ignoramos el resto por ahora
             _ => {}
+        }
+    }
+
+    // --- Evaluador de Expresiones ---
+
+    fn visitar_expresion(&mut self, expr: &Expr) -> TipoDato {
+        match expr {
+            Expr::LiteralInt(_) => TipoDato::Int,
+            Expr::LiteralFloat(_) => TipoDato::Float,
+            Expr::LiteralString(_) => TipoDato::String,
+            Expr::LiteralBool(_) => TipoDato::Bool,
+            Expr::Identificador(nombre) => {
+                // Verificamos si la variable existe al intentar usarla en una operación
+                if let Some(simbolo) = self.tabla.buscar(nombre) {
+                    simbolo.usada = true; // La estamos usando: Adios warning de Dead Code
+
+                    if !simbolo.inicializada {
+                        self.errores.push(format!("Error Semantico: La variable '{}' se esta usando antes de ser inicializada.", nombre));
+                    }
+
+                    return simbolo.tipo_dato.clone();
+                } else {
+                    self.errores.push(format!(
+                        "Error Semantico: La variable '{}' no esta definida.",
+                        nombre
+                    ));
+                    return TipoDato::Desconocido;
+                }
+            }
+            Expr::LlamadaFuncion { nombre, argumentos } => {
+                // Recorremos los argumentos para validarlos y marcarlos como usados
+                for arg in argumentos {
+                    self.visitar_expresion(arg);
+                }
+
+                TipoDato::Desconocido // Temporalmente devolvemos desconocido
+            }
+            Expr::OperacionBinaria {
+                izquierdo,
+                operador,
+                derecho,
+            } => {
+                // Evaluamos ambos lados de la operación
+                let tipo_izq = self.visitar_expresion(izquierdo);
+                let tipo_der = self.visitar_expresion(derecho);
+
+                // TODO: Validar compatibilidad de tipos (Ej. no sumar Int con String)
+
+                tipo_izq // Temporalmente asumimos que el resultado es del mismo tipo
+            }
         }
     }
 }

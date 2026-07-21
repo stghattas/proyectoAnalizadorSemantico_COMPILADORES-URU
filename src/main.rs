@@ -1,3 +1,5 @@
+#![allow(warnings)]
+
 mod ast;
 mod lexer;
 mod parser;
@@ -46,14 +48,14 @@ fn main() {
                 println!("Analisis Semantico: Todo correcto.");
             } else {
                 for error in semantico.errores {
-                    println!("{}", error);
+                    println!("[ERROR] {}", error);
                 }
                 for warning in semantico.warnings {
-                    println!("{}", warning);
+                    println!("[WARNING] {}", warning);
                 }
             }
             println!("--------------------------------------------------");
         }
-        Err(e) => println!("Error Sintáctico:\n{}", e),
+        Err(e) => println!("Error Sintactico:\n{}", e),
     }
 }
