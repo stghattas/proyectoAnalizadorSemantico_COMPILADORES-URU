@@ -56,6 +56,6 @@ fn main() {
             }
             println!("--------------------------------------------------");
         }
-        Err(e) => println!("Error Sintactico:\n{}", e),
+        Err(e) => println!("ERROR SINTACTICO:\n{}", e),
     }
 }

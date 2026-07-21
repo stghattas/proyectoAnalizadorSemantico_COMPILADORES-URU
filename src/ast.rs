@@ -4,11 +4,17 @@ pub enum Expr {
     LiteralFloat(f64),
     LiteralString(String),
     LiteralBool(bool),
-    Identificador(String),
+    Identificador {
+        nombre: String,
+        line: usize,
+        column: usize,
+    },
     OperacionBinaria {
         izquierdo: Box<Expr>,
         operador: String,
         derecho: Box<Expr>,
+        line: usize,
+        column: usize,
     },
     LlamadaFuncion {
         nombre: String,
@@ -22,37 +28,46 @@ pub enum Stmt {
     Declaracion {
         nombre: String,
         tipo: String,
-        valor: Option<Expr>, // Option porque podría no tener valor inicial
+        valor: Option<Expr>,
+        line: usize,
+        column: usize,
     },
-    // Para 'y = j + x'
     Asignacion {
         nombre: String,
         valor: Expr,
+        line: usize,
+        column: usize,
     },
     If {
         condicion: Expr,
         bloque_true: Vec<Stmt>,
         bloque_else: Option<Vec<Stmt>>,
+        line: usize,
+        column: usize,
     },
     While {
         condicion: Expr,
         bloque: Vec<Stmt>,
+        line: usize,
+        column: usize,
     },
     For {
         variable: String,
-        iterable: Expr, // Puede ser una lista, un rango o un id
+        iterable: Expr,
         bloque: Vec<Stmt>,
+        line: usize,
+        column: usize,
     },
     DefFuncion {
         nombre: String,
         parametros: Vec<(String, String)>,
         tipo_retorno: String,
         cuerpo: Vec<Stmt>,
+        line: usize,
+        column: usize,
     },
-    Expresion(Expr),
+    Expresion(Expr, usize, usize), // (Expr, line, column)
 }
-
-// --- Lógica de Impresión ---
 
 impl Stmt {
     pub fn imprimir_arbol(&self, nivel: usize) {
@@ -63,6 +78,7 @@ impl Stmt {
                 nombre,
                 tipo,
                 valor,
+                ..
             } => {
                 println!(
                     "{}└── Declaración [Nombre: {}, Tipo: {}]",
@@ -72,11 +88,11 @@ impl Stmt {
                     v.imprimir_arbol(nivel + 1);
                 }
             }
-            Stmt::Asignacion { nombre, valor } => {
+            Stmt::Asignacion { nombre, valor, .. } => {
                 println!("{}└── Asignación [Nombre: {}]", sangria, nombre);
                 valor.imprimir_arbol(nivel + 1);
             }
-            Stmt::Expresion(expr) => {
+            Stmt::Expresion(expr, _, _) => {
                 println!("{}└── Expresión Suelta", sangria);
                 expr.imprimir_arbol(nivel + 1);
             }
@@ -84,6 +100,7 @@ impl Stmt {
                 condicion,
                 bloque_true,
                 bloque_else,
+                ..
             } => {
                 println!("{}└── If", sangria);
                 println!("{}    ├── Condición:", sangria);
@@ -99,7 +116,9 @@ impl Stmt {
                     }
                 }
             }
-            Stmt::While { condicion, bloque } => {
+            Stmt::While {
+                condicion, bloque, ..
+            } => {
                 println!("{}└── While", sangria);
                 condicion.imprimir_arbol(nivel + 1);
                 println!("{}    └── Bloque:", sangria);
@@ -111,6 +130,7 @@ impl Stmt {
                 variable,
                 iterable,
                 bloque,
+                ..
             } => {
                 println!("{}└── For [Var: {}]", sangria, variable);
                 println!("{}    ├── In:", sangria);
@@ -124,7 +144,7 @@ impl Stmt {
                 nombre,
                 tipo_retorno,
                 cuerpo,
-                parametros,
+                ..
             } => {
                 println!(
                     "{}└── Función [Nombre: {}, Retorno: {}]",
@@ -148,7 +168,7 @@ impl Expr {
             Expr::LiteralFloat(val) => println!("{}├── Flotante: {}", sangria, val),
             Expr::LiteralString(val) => println!("{}├── String: \"{}\"", sangria, val),
             Expr::LiteralBool(val) => println!("{}├── Booleano: {}", sangria, val),
-            Expr::Identificador(nombre) => println!("{}├── Id: {}", sangria, nombre),
+            Expr::Identificador { nombre, .. } => println!("{}├── Id: {}", sangria, nombre),
             Expr::Array(elementos) => {
                 println!("{}├── Array", sangria);
                 for elem in elementos {
@@ -159,6 +179,7 @@ impl Expr {
                 izquierdo,
                 operador,
                 derecho,
+                ..
             } => {
                 println!("{}├── Operación: [{}]", sangria, operador);
                 izquierdo.imprimir_arbol(nivel + 1);

@@ -1,8 +1,6 @@
 use crate::ast::*;
 use std::collections::HashMap;
 
-// --- 1. Definición de Tipos y Símbolos ---
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum TipoDato {
     Int,
@@ -16,7 +14,6 @@ pub enum TipoDato {
 
 impl TipoDato {
     pub fn from_str(tipo: &str) -> Self {
-        // Si termina en [], extraemos la base (ej: "int[]" -> "int")
         if tipo.ends_with("[]") {
             let base = &tipo[..tipo.len() - 2];
             return TipoDato::Array(Box::new(TipoDato::from_str(base)));
@@ -40,9 +37,10 @@ pub struct Simbolo {
     pub parametros: Vec<TipoDato>,
     pub inicializada: bool,
     pub usada: bool,
+    pub line: usize,
+    pub column: usize,
 }
 
-// --- 2. La Tabla de Símbolos ---
 pub struct TablaSimbolos {
     entornos: Vec<HashMap<String, Simbolo>>,
 }
@@ -50,7 +48,7 @@ pub struct TablaSimbolos {
 impl TablaSimbolos {
     pub fn new() -> Self {
         TablaSimbolos {
-            entornos: vec![HashMap::new()], // Nivel 0: Global
+            entornos: vec![HashMap::new()],
         }
     }
 
@@ -63,8 +61,8 @@ impl TablaSimbolos {
             for (nombre, simbolo) in entorno_actual {
                 if !simbolo.usada && !simbolo.es_funcion {
                     warnings.push(format!(
-                        "Warning: La variable '{}' fue declarada pero nunca se uso.",
-                        nombre
+                        "Warning en la línea {}, columna {}: La variable '{}' fue declarada pero nunca se usó.",
+                        simbolo.line, simbolo.column, nombre
                     ));
                 }
             }
@@ -78,6 +76,8 @@ impl TablaSimbolos {
         tipo_dato: TipoDato,
         es_funcion: bool,
         parametros: Vec<TipoDato>,
+        line: usize,
+        column: usize,
     ) -> Result<(), String> {
         let entorno_actual = self.entornos.last_mut().unwrap();
         if entorno_actual.contains_key(&nombre) {
@@ -95,6 +95,8 @@ impl TablaSimbolos {
                 parametros,
                 inicializada: false,
                 usada: false,
+                line,
+                column,
             },
         );
         Ok(())
@@ -109,8 +111,6 @@ impl TablaSimbolos {
         None
     }
 }
-
-// --- 3. El Analizador Semántico ---
 
 pub struct AnalizadorSemantico {
     tabla: TablaSimbolos,
@@ -127,26 +127,19 @@ impl AnalizadorSemantico {
         }
     }
 
-    /// Punto de entrada principal. Recibe el AST completo generado por el Parser.
     pub fn analizar(&mut self, programa: &Vec<Stmt>) {
-        // 1. Recorrer todas las instrucciones a nivel global
         for instruccion in programa {
             self.visitar_instruccion(instruccion);
         }
 
-        // 2. Al terminar, verifica: Existe la funcion main()?
         if self.tabla.buscar("main").is_none() {
             self.errores.push("Error Semántico: No se encontró la función 'main()'. Todo programa debe tener un punto de entrada.".to_string());
         }
 
-        // 3. Salimos del entorno global para recolectar los ultimos warnings de Dead Code
         self.tabla.salir_entorno(&mut self.warnings);
     }
 
-    // --- Funciones Visitadoras ---
-
     fn visitar_instruccion(&mut self, stmt: &Stmt) {
-        // Estamos en el entorno global? (Nivel 0)
         let es_global = self.tabla.entornos.len() == 1;
 
         match stmt {
@@ -154,22 +147,28 @@ impl AnalizadorSemantico {
                 nombre,
                 tipo,
                 valor,
+                line,
+                column,
             } => {
                 let tipo_enum = TipoDato::from_str(tipo);
 
-                if let Err(e) =
-                    self.tabla
-                        .declarar(nombre.clone(), tipo_enum.clone(), false, Vec::new())
-                {
-                    self.errores.push(e);
+                if let Err(e) = self.tabla.declarar(
+                    nombre.clone(),
+                    tipo_enum.clone(),
+                    false,
+                    Vec::new(),
+                    *line,
+                    *column,
+                ) {
+                    self.errores.push(format!(
+                        "Error Semántico en la línea {}, columna {}: {}",
+                        line, column, e
+                    ));
                 }
 
                 if let Some(expr_valor) = valor {
-                    // Obtenemos el tipo del valor que se intenta guardar
                     let tipo_valor = self.visitar_expresion(expr_valor);
 
-                    // Comparamos si los tipos son compatibles
-                    // Revisar si estamos asignando un array vacío a una variable array
                     let es_array_vacio = if let (TipoDato::Array(_), TipoDato::Array(t_val)) =
                         (&tipo_enum, &tipo_valor)
                     {
@@ -182,7 +181,10 @@ impl AnalizadorSemantico {
                         if !(tipo_enum == TipoDato::Float && tipo_valor == TipoDato::Int)
                             && !es_array_vacio
                         {
-                            self.errores.push(format!("Error Semántico: No se puede asignar un valor de tipo {:?} a la variable '{}' de tipo {:?}.", tipo_valor, nombre, tipo_enum));
+                            self.errores.push(format!(
+                                "Error Semántico en la línea {}, columna {}: No se puede asignar un valor de tipo {:?} a la variable '{}' de tipo {:?}.",
+                                line, column, tipo_valor, nombre, tipo_enum
+                            ));
                         }
                     }
 
@@ -191,17 +193,23 @@ impl AnalizadorSemantico {
                     }
                 }
             }
-            Stmt::Asignacion { nombre, valor } => {
+            Stmt::Asignacion {
+                nombre,
+                valor,
+                line,
+                column,
+            } => {
                 if es_global {
-                    self.errores.push(format!("Error Semántico: Asignación a la variable '{}' en el entorno global. El código ejecutable debe estar dentro de una función.", nombre));
+                    self.errores.push(format!(
+                        "Error Semántico en la línea {}, columna {}: Asignación a la variable '{}' en el entorno global.",
+                        line, column, nombre
+                    ));
                 } else {
                     let tipo_valor = self.visitar_expresion(valor);
 
                     if let Some(simbolo) = self.tabla.buscar(nombre) {
                         let tipo_variable = simbolo.tipo_dato.clone();
 
-                        // Comparamos compatibilidad en asignaciones (x = "hola")
-                        // Revisar si estamos asignando un array vacío a una variable array
                         let es_array_vacio = if let (TipoDato::Array(_), TipoDato::Array(t_val)) =
                             (&tipo_variable, &tipo_valor)
                         {
@@ -214,23 +222,32 @@ impl AnalizadorSemantico {
                             if !(tipo_variable == TipoDato::Float && tipo_valor == TipoDato::Int)
                                 && !es_array_vacio
                             {
-                                self.errores.push(format!("Error Semántico: No se puede asignar un valor de tipo {:?} a la variable '{}' de tipo {:?}.", tipo_valor, nombre, tipo_variable));
+                                self.errores.push(format!(
+                                    "Error Semántico en la línea {}, columna {}: No se puede asignar un valor de tipo {:?} a la variable '{}' de tipo {:?}.",
+                                    line, column, tipo_valor, nombre, tipo_variable
+                                ));
                             }
                         }
 
                         simbolo.inicializada = true;
                         simbolo.usada = true;
                     } else {
-                        self.errores.push(format!("Error Semantico: La variable '{}' no ha sido declarada antes de su uso.", nombre));
+                        self.errores.push(format!(
+                            "Error Semántico en la línea {}, columna {}: La variable '{}' no ha sido declarada.",
+                            line, column, nombre
+                        ));
                     }
                 }
             }
-            Stmt::Expresion(expr) => {
+            Stmt::Expresion(expr, line, column) => {
                 if es_global {
                     if let Expr::LiteralString(_) = expr {
                         // Comentario multilínea
                     } else {
-                        self.errores.push("Error Semantico: Expresion ejecutable encontrada fuera de una funcion.".to_string());
+                        self.errores.push(format!(
+                            "Error Semántico en la línea {}, columna {}: Expresión ejecutable encontrada fuera de una función.",
+                            line, column
+                        ));
                     }
                 } else {
                     self.visitar_expresion(expr);
@@ -241,29 +258,32 @@ impl AnalizadorSemantico {
                 parametros,
                 tipo_retorno,
                 cuerpo,
+                line,
+                column,
             } => {
                 let tipo_enum = TipoDato::from_str(tipo_retorno);
 
-                // 1. Extraemos los tipos de los parámetros para guardarlos en la "firma" de la función
                 let mut tipos_parametros = Vec::new();
                 for (_, tipo_param) in parametros {
                     tipos_parametros.push(TipoDato::from_str(tipo_param));
                 }
 
-                // 2. Declaramos la función globalmente pasándole sus parámetros
-                if let Err(e) =
-                    self.tabla
-                        .declarar(nombre.clone(), tipo_enum, true, tipos_parametros)
-                {
-                    self.errores.push(e);
+                if let Err(e) = self.tabla.declarar(
+                    nombre.clone(),
+                    tipo_enum,
+                    true,
+                    tipos_parametros,
+                    *line,
+                    *column,
+                ) {
+                    self.errores.push(format!(
+                        "Error Semántico en la línea {}, columna {}: {}",
+                        line, column, e
+                    ));
                 }
 
-                // 3. Entramos al entorno local de la función
                 self.tabla.entrar_entorno();
 
-                // 4. Inyectamos los parámetros como si fueran variables declaradas
-
-                // para que el código del 'cuerpo' pueda usarlas sin que dé "Error: Variable no definida".
                 for (nombre_param, tipo_param) in parametros {
                     let tipo_enum_param = TipoDato::from_str(tipo_param);
                     if let Err(e) = self.tabla.declarar(
@@ -271,15 +291,19 @@ impl AnalizadorSemantico {
                         tipo_enum_param,
                         false,
                         Vec::new(),
+                        *line,
+                        *column,
                     ) {
-                        self.errores.push(e);
+                        self.errores.push(format!(
+                            "Error Semántico en la línea {}, columna {}: {}",
+                            line, column, e
+                        ));
                     }
                     if let Some(simbolo) = self.tabla.buscar(nombre_param) {
-                        simbolo.inicializada = true; // Ya vienen con valor cuando se llama a la función
+                        simbolo.inicializada = true;
                     }
                 }
 
-                // Recorremos el cuerpo de la función
                 for inst in cuerpo {
                     self.visitar_instruccion(inst);
                 }
@@ -290,22 +314,21 @@ impl AnalizadorSemantico {
                 condicion,
                 bloque_true,
                 bloque_else,
+                ..
             } => {
-                self.visitar_expresion(condicion); // Evaluamos la condición
-
-                // Recorremos el interior del bloque if
+                self.visitar_expresion(condicion);
                 for inst in bloque_true {
                     self.visitar_instruccion(inst);
                 }
-
-                // Si hay un else, también lo recorremos
                 if let Some(bloque) = bloque_else {
                     for inst in bloque {
                         self.visitar_instruccion(inst);
                     }
                 }
             }
-            Stmt::While { condicion, bloque } => {
+            Stmt::While {
+                condicion, bloque, ..
+            } => {
                 self.visitar_expresion(condicion);
                 for inst in bloque {
                     self.visitar_instruccion(inst);
@@ -315,39 +338,39 @@ impl AnalizadorSemantico {
                 variable,
                 iterable,
                 bloque,
+                line,
+                column,
             } => {
                 let tipo_iterable = self.visitar_expresion(iterable);
 
-                // Entramos a un micro-entorno para la variable del for (ej: 'i')
                 self.tabla.entrar_entorno();
 
-                // Declaramos la variable iteradora temporal
-                // Si iteras un Array(Int), la variable es Int. Si no, le ponemos Desconocido por ahora.
                 let tipo_var = if let TipoDato::Array(tipo_base) = tipo_iterable {
                     *tipo_base
                 } else {
                     TipoDato::Desconocido
                 };
 
-                let _ = self
-                    .tabla
-                    .declarar(variable.clone(), tipo_var, false, Vec::new());
+                let _ = self.tabla.declarar(
+                    variable.clone(),
+                    tipo_var,
+                    false,
+                    Vec::new(),
+                    *line,
+                    *column,
+                );
                 if let Some(simbolo) = self.tabla.buscar(variable) {
                     simbolo.inicializada = true;
                 }
 
-                // Recorremos el interior del for
                 for inst in bloque {
                     self.visitar_instruccion(inst);
                 }
 
                 self.tabla.salir_entorno(&mut self.warnings);
             }
-            _ => {} // Ahora sí, por si acaso hay algún nodo suelto no contemplado
         }
     }
-
-    // --- Evaluador de Expresiones ---
 
     fn visitar_expresion(&mut self, expr: &Expr) -> TipoDato {
         match expr {
@@ -355,20 +378,23 @@ impl AnalizadorSemantico {
             Expr::LiteralFloat(_) => TipoDato::Float,
             Expr::LiteralString(_) => TipoDato::String,
             Expr::LiteralBool(_) => TipoDato::Bool,
-            Expr::Identificador(nombre) => {
-                // Verificamos si la variable existe al intentar usarla en una operación
+            Expr::Identificador {
+                nombre,
+                line,
+                column,
+            } => {
                 if let Some(simbolo) = self.tabla.buscar(nombre) {
-                    simbolo.usada = true; // La estamos usando: Adios warning de Dead Code
+                    simbolo.usada = true;
 
                     if !simbolo.inicializada {
-                        self.errores.push(format!("Error Semantico: La variable '{}' se esta usando antes de ser inicializada.", nombre));
+                        self.errores.push(format!("Error Semántico en la línea {}, columna {}: La variable '{}' se está usando antes de ser inicializada.", line, column, nombre));
                     }
 
                     return simbolo.tipo_dato.clone();
                 } else {
                     self.errores.push(format!(
-                        "Error Semantico: La variable '{}' no esta definida.",
-                        nombre
+                        "Error Semántico en la línea {}, columna {}: La variable '{}' no está definida.",
+                        line, column, nombre
                     ));
                     return TipoDato::Desconocido;
                 }
@@ -381,11 +407,9 @@ impl AnalizadorSemantico {
                     return TipoDato::Void;
                 }
 
-                // Extraemos la información aislando el préstamo (borrow)
                 let info_funcion = {
                     if let Some(simbolo) = self.tabla.buscar(nombre) {
                         simbolo.usada = true;
-                        // 🌟 Extraemos también la lista de parámetros
                         Some((
                             simbolo.es_funcion,
                             simbolo.tipo_dato.clone(),
@@ -400,33 +424,29 @@ impl AnalizadorSemantico {
                     Some((es_funcion, tipo_retorno, parametros_esperados)) => {
                         if !es_funcion {
                             self.errores.push(format!(
-                                "Error Semantico: '{}' es una variable, no una funcion.",
+                                "Error Semántico: '{}' es una variable, no una función.",
                                 nombre
                             ));
                             return TipoDato::Desconocido;
                         }
 
-                        // Validar cantidad de argumentos
                         if argumentos.len() != parametros_esperados.len() {
-                            self.errores.push(format!("Error Semantico: La funcion '{}' espera {} argumentos, pero se enviaron {}.", nombre, parametros_esperados.len(), argumentos.len()));
+                            self.errores.push(format!("Error Semántico: La función '{}' espera {} argumentos, pero se enviaron {}.", nombre, parametros_esperados.len(), argumentos.len()));
                         } else {
-                            // Validar que los tipos coincidan
                             for (i, arg) in argumentos.iter().enumerate() {
                                 let tipo_arg = self.visitar_expresion(arg);
                                 let tipo_esperado = &parametros_esperados[i];
 
                                 if tipo_arg != TipoDato::Desconocido && tipo_arg != *tipo_esperado {
-                                    // Tolerancia habitual: Permitir enviar un Int si esperaba Float
                                     if !(*tipo_esperado == TipoDato::Float
                                         && tipo_arg == TipoDato::Int)
                                     {
-                                        self.errores.push(format!("Error Semantico: Argumento {} en funcion '{}' esperaba tipo {:?}, pero recibio {:?}", i + 1, nombre, tipo_esperado, tipo_arg));
+                                        self.errores.push(format!("Error Semántico: Argumento {} en función '{}' esperaba tipo {:?}, pero recibió {:?}", i + 1, nombre, tipo_esperado, tipo_arg));
                                     }
                                 }
                             }
                         }
 
-                        // Evaluamos los argumentos aunque haya error de longitud para marcarlos como usados
                         if argumentos.len() != parametros_esperados.len() {
                             for arg in argumentos {
                                 self.visitar_expresion(arg);
@@ -436,7 +456,7 @@ impl AnalizadorSemantico {
                         return tipo_retorno;
                     }
                     None => {
-                        self.errores.push(format!("Error Semantico: Se intento llamar a la funcion '{}', pero no ha sido definida.", nombre));
+                        self.errores.push(format!("Error Semántico: Se intentó llamar a la función '{}', pero no ha sido definida.", nombre));
                         return TipoDato::Desconocido;
                     }
                 }
@@ -445,18 +465,18 @@ impl AnalizadorSemantico {
                 izquierdo,
                 operador,
                 derecho,
+                line,
+                column,
             } => {
                 let tipo_izq = self.visitar_expresion(izquierdo);
                 let tipo_der = self.visitar_expresion(derecho);
 
-                // Si alguno es desconocido, evitamos lanzar errores en cascada
                 if tipo_izq == TipoDato::Desconocido || tipo_der == TipoDato::Desconocido {
                     return TipoDato::Desconocido;
                 }
 
                 match operador.as_str() {
                     "+" | "-" | "*" | "/" => {
-                        // Regla: Matemáticas solo con numeros
                         let izq_es_num = tipo_izq == TipoDato::Int || tipo_izq == TipoDato::Float;
                         let der_es_num = tipo_der == TipoDato::Int || tipo_der == TipoDato::Float;
 
@@ -465,20 +485,17 @@ impl AnalizadorSemantico {
                                 return TipoDato::Float;
                             }
                             return TipoDato::Int;
-                        }
-                        // Regla Especial: Permitir concatenar Strings con '+'
-                        else if operador == "+"
+                        } else if operador == "+"
                             && tipo_izq == TipoDato::String
                             && tipo_der == TipoDato::String
                         {
                             return TipoDato::String;
                         } else {
-                            self.errores.push(format!("Error Semantico: Tipos incompatibles para la operacion '{}' entre {:?} y {:?}", operador, tipo_izq, tipo_der));
+                            self.errores.push(format!("Error Semántico en la línea {}, columna {}: Tipos incompatibles para la operación '{}' entre {:?} y {:?}", line, column, operador, tipo_izq, tipo_der));
                             return TipoDato::Desconocido;
                         }
                     }
                     ">" | "<" | ">=" | "<=" | "==" | "!=" => {
-                        // Las operaciones relacionales siempre devuelven un Booleano
                         return TipoDato::Bool;
                     }
                     _ => TipoDato::Desconocido,
@@ -486,18 +503,15 @@ impl AnalizadorSemantico {
             }
             Expr::Array(elementos) => {
                 if elementos.is_empty() {
-                    // Un array vacío [] inicialmente no tiene tipo definido
                     return TipoDato::Array(Box::new(TipoDato::Desconocido));
                 }
 
-                // Determinamos el tipo basado en el primer elemento
                 let tipo_base = self.visitar_expresion(&elementos[0]);
 
-                // Validamos que todos los demás sean estrictamente del mismo tipo
                 for (i, elem) in elementos.iter().enumerate().skip(1) {
                     let tipo_elem = self.visitar_expresion(elem);
                     if tipo_elem != tipo_base {
-                        self.errores.push(format!("Error Semantico: Tipos mixtos en el array. El indice 0 es {:?} pero el indice {} es {:?}", tipo_base, i, tipo_elem));
+                        self.errores.push(format!("Error Semántico: Tipos mixtos en el array. El índice 0 es {:?} pero el índice {} es {:?}", tipo_base, i, tipo_elem));
                     }
                 }
 
