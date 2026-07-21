@@ -259,12 +259,44 @@ impl AnalizadorSemantico {
                 }
             }
             Expr::LlamadaFuncion { nombre, argumentos } => {
-                // Recorremos los argumentos para validarlos y marcarlos como usados
-                for arg in argumentos {
-                    self.visitar_expresion(arg);
+                // 1. Caso Especial: Funciones Nativas (Built-ins)
+                if nombre == "print" {
+                    for arg in argumentos {
+                        self.visitar_expresion(arg);
+                    }
+                    return TipoDato::Void;
                 }
 
-                TipoDato::Desconocido // Temporalmente devolvemos desconocido
+                // 2. Funciones definidas por el usuario
+
+                let info_funcion = {
+                    if let Some(simbolo) = self.tabla.buscar(nombre) {
+                        simbolo.usada = true; // Marcamos como usada
+                        Some((simbolo.es_funcion, simbolo.tipo_dato.clone())) // Clonamos los datos que necesitamos
+                    } else {
+                        None
+                    }
+                };
+
+                match info_funcion {
+                    Some((es_funcion, tipo_retorno)) => {
+                        // Verificamos que no sea una variable con paréntesis
+                        if !es_funcion {
+                            self.errores.push(format!("Error Semantico: '{}' es una variable, no una funcion que se pueda llamar.", nombre));
+                            return TipoDato::Desconocido;
+                        }
+
+                        for arg in argumentos {
+                            self.visitar_expresion(arg);
+                        }
+
+                        return tipo_retorno;
+                    }
+                    None => {
+                        self.errores.push(format!("Error Semantico: Se intentó llamar a la funcion '{}', pero no ha sido definida.", nombre));
+                        return TipoDato::Desconocido;
+                    }
+                }
             }
             Expr::OperacionBinaria {
                 izquierdo,
